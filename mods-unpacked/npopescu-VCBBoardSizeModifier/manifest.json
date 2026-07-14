@@ -1,9 +1,9 @@
 {
 	"name": "VCBBoardSizeModifier",
 	"namespace": "npopescu",
-	"version_number": "1.0.0",
+	"version_number": "1.1.0",
 	"website_url": "https://github.com/n-popescu/vcb-board-size-modifier",
-	"description": "Resize the Virtual Circuit Board board past the default 2048x2048. Adds a toolbar 'Board' button opening a small window with Width/Height fields and an Apply button. VCB boards are square, so a resize makes a side x side board (2048-8192); existing content is preserved. Compatible with the VCB Multiplayer mod - a resize is mirrored to the other player when a session is live.",
+	"description": "Resize the Virtual Circuit Board board past the default 2048x2048. Adds a toolbar 'Board' button opening a small window with a single Board size field and an Apply button (boards are square). Range 2048-8192; existing content is preserved. Compatible with the VCB Multiplayer mod - the size field is mirrored to the other player live as you type, and Apply resizes both boards.",
 	"dependencies": [],
 	"extra": {
 		"godot": {

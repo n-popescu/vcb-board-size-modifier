@@ -25,8 +25,8 @@ axes (`scan_pixels` loops `x, y` in `[0, side)`; see
 dimensions"). So:
 
 > **Only ever produce a square `side × side` board.** A non-square image truncates (taller than
-> wide) or reads out of bounds (wider than tall). The UI has two fields for familiarity but Apply
-> collapses them to one side (the larger), clamped to `[MIN_SIDE, MAX_SIDE]` = `[2048, 8192]`.
+> wide) or reads out of bounds (wider than tall). The UI is a single **Board size** field
+> clamped to `[MIN_SIDE, MAX_SIDE]` = `[2048, 8192]`.
 
 ## 2. How the resize works (what state must move together)
 
@@ -53,12 +53,20 @@ documented v1 limitations — don't pretend they're fixed.
 ## 3. Multiplayer sync
 
 `board_resizer.gd` is added at `/root/BoardSizeSync` (a stable path so `rpc()` resolves on both
-peers). On a local Apply it broadcasts `_rpc_apply_size(side)` **only** when a live session
-exists: `/root/MP` present, `get_tree().network_peer != null`, and MP's `is_connected` +
-`is_game_started` are true (queried via `Object.get(...)` so the mod still works with the
-multiplayer mod absent). The remote applies with `broadcast = false` (guarded by
-`_applying_remote`) so it never echoes back. This rides the same ENet peer the multiplayer mod
-set up; this mod does not open its own connection.
+peers). Two `remote` RPCs ride the multiplayer mod's ENet peer (this mod never opens its own):
+
+- **`_rpc_set_pending_size(text)`** — the size field is mirrored **live as the user types**
+  (`board_size_window.gd :: _on_text_changed` → `broadcast_pending_text`), so both players always
+  see the same pending number before anyone presses Apply. Raw text is sent (clamping is deferred
+  to Apply). The receiver sets the field via `set_pending_text`, guarded by `_suppress_broadcast`
+  so it doesn't echo, and it won't yank the caret if that peer is mid-edit.
+- **`_rpc_apply_size(side)`** — Apply resizes locally and mirrors the resize to the peer, which
+  applies with `broadcast = false` (guarded by `_applying_remote`) so it never echoes back.
+
+Both are gated on `_live_session()` (`/root/MP` present, `get_tree().network_peer != null`, and
+MP's `is_connected` + `is_game_started` true — all via `get_node_or_null` / `Object.get(...)` so
+the mod still works with the multiplayer mod absent). Both players must have this mod installed
+for the RPCs to resolve.
 
 ## 4. Engine / GDScript constraints
 
@@ -81,7 +89,7 @@ mods-unpacked/npopescu-VCBBoardSizeModifier/
 ├── mod_main.gd               waits for Main, builds the /root/BoardSizeSync node + window + toolbar button
 └── scripts/
     ├── board_resizer.gd      the resize routine + the /root/BoardSizeSync MP RPC node
-    └── gui/board_size_window.gd   the WindowDialog: Width/Height fields + Apply
+    └── gui/board_size_window.gd   the WindowDialog: a single Board size field + Apply
 ```
 
 Versioning: bump `manifest.json` `version_number` (semver) on every functional change; a bump
@@ -95,4 +103,5 @@ landing on `main` auto-cuts a Release.
 - Commits are auto-signed (ssh). Don't disable signing/hooks.
 - Open PRs against `main`; squash-merge. Note that changes are unverified in-engine and give a
   test recipe (open **Board**, set e.g. 4096, Apply; draw/simulate in the new area; with the
-  multiplayer mod, resize on one peer and confirm the other matches).
+  multiplayer mod, type in the field on one peer and confirm the other's field updates live, then
+  Apply and confirm both boards resize).
