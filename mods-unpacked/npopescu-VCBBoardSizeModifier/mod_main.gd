@@ -29,6 +29,9 @@ func _init() -> void:
 	# unaffected. See extensions/circuit_renderer.gd.
 	ModLoaderMod.install_script_extension(EXTENSIONS + "/circuit_renderer.gd")
 	ModLoaderMod.install_script_extension(EXTENSIONS + "/tool_array_pencil_eraser.gd")
+	# Persist the board size inside saved .vcb files (under a shared "modded" field) and restore it
+	# on load. See extensions/file_system.gd.
+	ModLoaderMod.install_script_extension(EXTENSIONS + "/file_system.gd")
 
 
 func _ready() -> void:
