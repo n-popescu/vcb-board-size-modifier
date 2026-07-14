@@ -5,10 +5,14 @@ extends "res://src/editor/tool_array_pencil_eraser.gd"
 # over (see extensions/circuit_renderer.gd for why that's the lag).
 #
 # We only do this while the board is larger than the default 2048 (where vanilla is already
-# fine), and only for moves within a stroke — the first event of each stroke (is_just_pressed)
-# still triggers a full rebuild, which re-syncs the cached textures so any imprecision in a
-# dirty rect can never accumulate. E.echo is synchronous, so arming before super.draw() and
-# flushing after brackets exactly the one ed_layers_resources_change that draw() emits.
+# fine). Every event of a stroke — including the first click (is_just_pressed) — takes the
+# partial path: the changed region is always just the brush stamp (or the segment it traced),
+# never the whole board. The cached textures stay authoritative because every NON-stroke change
+# (undo/redo, bucket, selection, resize, load, remote MP draw) still runs the renderer's full
+# rebuild, and board_size_mod_flush falls back to a full rebuild whenever the cache isn't ready
+# — so nothing can drift out of sync, and a fresh stroke never has to re-upload the whole board.
+# E.echo is synchronous, so arming before super.draw() and flushing after brackets exactly the
+# one ed_layers_resources_change that draw() emits.
 
 const _BSM_RENDERER_PATH := "Main/World/CircuitRenderer"
 
@@ -17,10 +21,14 @@ func draw(pixel: Vector2, is_just_pressed: bool, is_draw: bool) -> void:
 	var renderer := _bsm_renderer()
 	var use_partial: bool = (
 		renderer != null
-		and not is_just_pressed
 		and _bsm_is_big_board()
 		and renderer.has_method("board_size_mod_arm"))
-	var p0: Vector2 = last_pos
+	# The changed region is the segment last_pos -> pixel grown by the brush. On the FIRST click
+	# of a stroke there is no segment yet (draw() sets first_pos = pixel and stamps only at pixel),
+	# and last_pos still holds the END of the previous stroke — anywhere on the board. Using it
+	# would make the dirty rect span that whole gap and re-upload almost the entire board, so on
+	# the first click we anchor the rect at `pixel` alone.
+	var p0: Vector2 = pixel if is_just_pressed else last_pos
 	if use_partial:
 		renderer.board_size_mod_arm()
 	.draw(pixel, is_just_pressed, is_draw)

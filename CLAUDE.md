@@ -67,10 +67,15 @@ Two things a resize used to *not* do, now handled:
   O(side²) upload each move (≈768 MB/move at 8192). Two **script extensions** fix it:
   `extensions/tool_array_pencil_eraser.gd` reports the exact rectangle a stroke changed, and
   `extensions/circuit_renderer.gd` uploads only that rectangle for the one changed layer via
-  `VisualServer.texture_set_data_partial`. The first event of each stroke still does a full
-  rebuild (re-sync), and it's **gated to boards larger than 2048** — a default board is
-  byte-for-byte the stock path. `E.echo` is synchronous, so arming the renderer before
-  `super.draw()` and flushing after brackets exactly the one event `draw()` emits.
+  `VisualServer.texture_set_data_partial`. **Every** event of a stroke takes this path — including
+  the first click (v1.3.0): its dirty rect is anchored at the clicked pixel alone (not from the
+  stale `last_pos` left by the previous stroke), so starting a stroke no longer re-uploads the
+  whole board (the ≈768 MB/click hitch at 8192). The cache stays authoritative because every
+  non-stroke change (undo/redo, bucket, selection, resize, load, remote MP draw) still runs the
+  full rebuild, and the flush falls back to a full rebuild whenever the cache isn't ready. It's
+  **gated to boards larger than 2048** — a default board is byte-for-byte the stock path. `E.echo`
+  is synchronous, so arming the renderer before `super.draw()` and flushing after brackets exactly
+  the one event `draw()` emits.
 
 **Values that are `const` in game scripts still can't be changed** from a runtime mod: notably
 `circuit_renderer.gd`'s `const CIRCUIT_RECT` (only used for entity-highlight hover — so
