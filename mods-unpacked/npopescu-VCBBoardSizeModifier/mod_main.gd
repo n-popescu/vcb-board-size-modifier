@@ -15,6 +15,7 @@ extends Node
 const MOD_DIR := "npopescu-VCBBoardSizeModifier"
 const MOD_ROOT := "res://mods-unpacked/npopescu-VCBBoardSizeModifier"
 const SCRIPTS := MOD_ROOT + "/scripts"
+const EXTENSIONS := MOD_ROOT + "/extensions"
 const MAIN_THEME := "res://src/gui/themes/main_theme.tres"
 
 var _built := false
@@ -22,6 +23,12 @@ var _built := false
 
 func _init() -> void:
 	ModLoaderLog.info("Installing VCB Board Size Modifier…", MOD_DIR)
+	# Script extensions that make drawing on a grown board fast: the tool reports the changed
+	# rectangle and the renderer uploads only that region (instead of the whole board, three
+	# textures, every mouse-move). They no-op at the default 2048 size, so a stock board is
+	# unaffected. See extensions/circuit_renderer.gd.
+	ModLoaderMod.install_script_extension(EXTENSIONS + "/circuit_renderer.gd")
+	ModLoaderMod.install_script_extension(EXTENSIONS + "/tool_array_pencil_eraser.gd")
 
 
 func _ready() -> void:
