@@ -20,7 +20,23 @@ extends Node
 const MIN_SIDE := 2048
 const MAX_SIDE := 8192
 
+# Board-texture shaders. The visible board (the tinted, grid-lined square) is drawn by the
+# background shader on a padded quad; the ink-symbol overlay tiles per board pixel. Both bake
+# the board size as `const float board_size = 2048.0` (the background also bakes the quad
+# `size`/`origin`). A runtime mod can't set a shader const via set_shader_param, but it CAN
+# rewrite the shader source and recompile it in place — which is what _apply_board_textures does.
+const BG_SHADER_PATH := "res://src/graphics/shaders/background.shader"
+const INK_SHADER_PATH := "res://src/graphics/shaders/ink_symbols_overlay.shader"
+const BG_PAD := 3072            # padding kept around the board inside the background quad (vanilla)
+const BG_BASE := 8192.0         # vanilla quad size (2048 + 2*3072) — the grid's reference scale
+
 var _applying_remote := false
+
+# Pristine shader sources, cached on first use so repeated resizes always patch from vanilla.
+var _bg_src := ""
+var _ink_src := ""
+var _bg_src_loaded := false
+var _ink_src_loaded := false
 
 
 func get_current_side() -> int:
@@ -102,7 +118,12 @@ func apply_board_size(side: int, do_broadcast: bool) -> void:
 		camera.CIRCUIT_SIZE = new_size
 	_resize_renderer(new_size)
 
-	# 4) Mirror to the multiplayer peer, if a live session exists.
+	# 4) Grow the board TEXTURE too: the background grid + ink-symbol shaders bake the board
+	#    size as a shader const, so without this the visible board stays a 2048 island you can
+	#    draw outside of. This rebuilds those shaders for the new side.
+	_apply_board_textures(side)
+
+	# 5) Mirror to the multiplayer peer, if a live session exists.
 	if do_broadcast and not _applying_remote:
 		_broadcast(side)
 
@@ -156,6 +177,118 @@ func _resize_renderer(new_size: Vector2) -> void:
 	var iso := cr.get_node_or_null("InkSymbolsOverlay")
 	if iso != null:
 		iso.rect_min_size = new_size
+
+
+# --- board textures (background grid + ink-symbol overlay) --------------------------------
+# Rebuild the two board-size-baking shaders for `side`. Both mutate the shader `code` in place
+# (same Shader object) so the material keeps its param values and any cached references (e.g.
+# CircuitRenderer's `symbmat`) stay valid. Best-effort and additive: if a node/material/source
+# is missing, we skip it — the resize still works, the texture just doesn't grow.
+func _apply_board_textures(side: int) -> void:
+	_apply_background_texture(side)
+	_apply_ink_symbols_texture(side)
+
+
+func _apply_background_texture(side: int) -> void:
+	var bg := _n("Main/World/Background")
+	if bg == null:
+		return
+	# Grow the background quad so the padded board region fits (anchors are 0, so margins are
+	# absolute world positions; the quad must be exactly (side + 2*pad) to match the shader's
+	# `size`, positioned so local (pad,pad) maps to world (0,0)).
+	bg.margin_left = -float(BG_PAD)
+	bg.margin_top = -float(BG_PAD)
+	bg.margin_right = float(side + BG_PAD)
+	bg.margin_bottom = float(side + BG_PAD)
+	var mat = bg.get("material")
+	if not (mat is ShaderMaterial):
+		return
+	var src := _background_source(mat)
+	if src == "":
+		return
+	var total := side + 2 * BG_PAD
+	var code := src
+	code = _set_const_float(code, "size", float(total))
+	code = _set_const_float(code, "board_size", float(side))
+	code = _set_const_float(code, "origin", float(BG_PAD))
+	# Keep the grid's world cell-size and line weight identical to vanilla as the quad grows:
+	# pin the line-weight to the vanilla 8192 quad, and scale the grid frequency by size/8192 so
+	# cells stay the same size in world space (at side 2048 both are no-ops).
+	code = code.replace("(gridscale / size)", "(gridscale / 8192.0)")
+	code = code.replace(
+		"sin(fract(UV * amount) * PI)",
+		"sin(fract(UV * amount * (size / 8192.0)) * PI)")
+	_recompile_in_place(mat, code)
+
+
+func _apply_ink_symbols_texture(side: int) -> void:
+	var iso := _n("Main/World/CircuitRenderer/InkSymbolsOverlay")
+	if iso == null:
+		return
+	var mat = iso.get("material")
+	if not (mat is ShaderMaterial):
+		return
+	var src := _ink_source(mat)
+	if src == "":
+		return
+	# The overlay rect is sized to the board, so UV*board_size must equal the board pixel — use
+	# the real board side (not the padded quad size).
+	_recompile_in_place(mat, _set_const_float(src, "board_size", float(side)))
+
+
+# Recompile the material's shader from `code`, in place (same Shader object → params + cached
+# references survive). No-op if there's no shader to recompile.
+func _recompile_in_place(mat, code: String) -> void:
+	if not (mat is ShaderMaterial) or mat.shader == null:
+		return
+	mat.shader.code = code
+
+
+# Replace `const float <name> = <number>;` with `= <value>;`. No-op (returns code unchanged) if
+# the declaration isn't found, so an upstream shader change degrades gracefully. Uses a plain
+# Array (not the PoolStringArray from split) so in-place element assignment is well-defined.
+func _set_const_float(code: String, cname: String, value: float) -> String:
+	var lines := Array(code.split("\n"))
+	var needle := "const float " + cname + " ="
+	var replacement := "const float " + cname + " = " + str(int(round(value))) + ".0;"
+	for i in range(lines.size()):
+		if str(lines[i]).strip_edges().begins_with(needle):
+			lines[i] = replacement
+			break
+	return PoolStringArray(lines).join("\n")
+
+
+func _background_source(mat) -> String:
+	if not _bg_src_loaded:
+		_bg_src = _shader_source(BG_SHADER_PATH, mat)
+		_bg_src_loaded = true
+	return _bg_src
+
+
+func _ink_source(mat) -> String:
+	if not _ink_src_loaded:
+		_ink_src = _shader_source(INK_SHADER_PATH, mat)
+		_ink_src_loaded = true
+	return _ink_src
+
+
+# Pristine shader source: prefer the game's `<path>.gd` companion (the same source the game's
+# GDshaderLoader reads at startup); fall back to the live material code if it's still vanilla.
+func _shader_source(path: String, mat) -> String:
+	var gd_path := path + ".gd"
+	if ResourceLoader.exists(gd_path):
+		var res = load(gd_path)
+		if res != null:
+			var inst = res.new()
+			if inst != null:
+				var code = inst.get("shader_code")
+				if typeof(code) == TYPE_STRING and not (code as String).empty():
+					return str(code)
+	if mat is ShaderMaterial and mat.shader != null:
+		var live := str(mat.shader.code)
+		if live.find("board_size") != -1:
+			return live
+	return ""
 
 
 func _editor() -> Node:

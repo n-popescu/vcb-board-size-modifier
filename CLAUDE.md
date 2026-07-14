@@ -45,10 +45,37 @@ reconfigures every **mutable** one, in this order, then rebuilds the board:
    `Main/World/CircuitRenderer` (its `rect_size`, `PrepassViewport.size`, and the
    `PrepassColorRect / DownsamplingPostProcessing / InkSymbolsOverlay` min sizes).
 
-**Values that are `const` in game scripts can't be changed** from a runtime mod: notably
-`circuit_renderer.gd`'s `const CIRCUIT_RECT` (only used for entity-highlight hover) and the
-`board_size = 2048.0` baked into the background / ink-symbol shaders (cosmetic). These are the
-documented v1 limitations — don't pretend they're fixed.
+### 2a. Board TEXTURE + draw performance (v1.2.0)
+
+Two things a resize used to *not* do, now handled:
+
+- **The board texture grows with the board.** The visible board (the tinted, grid-lined
+  square) is drawn by `background.shader`, and the ink-symbol tiling by
+  `ink_symbols_overlay.shader`; both bake `const float board_size = 2048.0` (the background
+  also bakes the quad `size = 8192.0` / `origin = 3072.0`). A runtime mod can't set a shader
+  `const` via `set_shader_param`, but it *can* rewrite the shader source and recompile it. So
+  `board_resizer.gd :: _apply_board_textures(side)` takes the **pristine** source (from the
+  game's `<shader>.gd` companion — the same code `gdshader_loader.gd` loads at startup),
+  substitutes the sizes for the current board, and sets `material.shader.code` **in place**
+  (same `Shader` object, so material params and CircuitRenderer's cached `symbmat`/`mat` stay
+  valid). For the background it also resizes the `World/Background` quad to `side + 2*3072` and
+  keeps the grid's world cell-size/line-weight identical to vanilla (pin the weight to the
+  8192 quad; scale the grid frequency by `size/8192`). Sources are cached pristine on first
+  use so repeated resizes never patch already-patched code.
+- **Drawing on a grown board stays fast.** Vanilla rebuilds three full-board `ImageTexture`s
+  on every `ed_layers_resources_change`, and a stroke fires that per mouse-move — an
+  O(side²) upload each move (≈768 MB/move at 8192). Two **script extensions** fix it:
+  `extensions/tool_array_pencil_eraser.gd` reports the exact rectangle a stroke changed, and
+  `extensions/circuit_renderer.gd` uploads only that rectangle for the one changed layer via
+  `VisualServer.texture_set_data_partial`. The first event of each stroke still does a full
+  rebuild (re-sync), and it's **gated to boards larger than 2048** — a default board is
+  byte-for-byte the stock path. `E.echo` is synchronous, so arming the renderer before
+  `super.draw()` and flushing after brackets exactly the one event `draw()` emits.
+
+**Values that are `const` in game scripts still can't be changed** from a runtime mod: notably
+`circuit_renderer.gd`'s `const CIRCUIT_RECT` (only used for entity-highlight hover — so
+hover-highlight past the original 2048 region is still off). The background / ink-symbol shader
+consts are no longer a limitation (see above); don't claim they are.
 
 ## 3. Multiplayer sync
 
@@ -86,11 +113,21 @@ for the RPCs to resolve.
 build.sh                      → npopescu-VCBBoardSizeModifier.zip
 mods-unpacked/npopescu-VCBBoardSizeModifier/
 ├── manifest.json             Mod Loader manifest (id = npopescu-VCBBoardSizeModifier)
-├── mod_main.gd               waits for Main, builds the /root/BoardSizeSync node + window + toolbar button
-└── scripts/
-    ├── board_resizer.gd      the resize routine + the /root/BoardSizeSync MP RPC node
-    └── gui/board_size_window.gd   the WindowDialog: a single Board size field + Apply
+├── mod_main.gd               installs the draw-perf extensions, then waits for Main and builds
+│                             the /root/BoardSizeSync node + window + toolbar button
+├── scripts/
+│   ├── board_resizer.gd      the resize routine (incl. board-texture shader rebuild) + the
+│   │                         /root/BoardSizeSync MP RPC node
+│   └── gui/board_size_window.gd   the WindowDialog: a single Board size field + Apply
+└── extensions/               script extensions (installed in mod_main _init) for draw perf
+    ├── circuit_renderer.gd        caches the layer textures + partial-uploads the changed rect
+    └── tool_array_pencil_eraser.gd   reports the changed rect around a stroke to the renderer
 ```
+
+The extensions are installed with `ModLoaderMod.install_script_extension` in `mod_main`'s
+`_init()` (same convention as the multiplayer mod). They target `res://src/world/circuit_renderer.gd`
+and `res://src/editor/tool_array_pencil_eraser.gd` — scripts the multiplayer mod does *not*
+extend, so the two mods coexist. Super-calls use `.method()` (GDScript 3.5).
 
 Versioning: bump `manifest.json` `version_number` (semver) on every functional change; a bump
 landing on `main` auto-cuts a Release.

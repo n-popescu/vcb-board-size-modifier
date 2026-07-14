@@ -59,14 +59,26 @@ already set up: the **field value is mirrored live as you type** (so both player
 number), and **Apply resizes both boards**. With the multiplayer mod absent it simply resizes
 locally.
 
-## Limitations (v1)
+## The board texture grows too (v1.2.0)
+
+The visible board — the tinted, grid-lined square, plus the ink-symbol overlay — is drawn by
+shaders that baked the board size as a constant, so earlier versions left it a 2048 island you
+could draw *outside* of. It now **grows with the board**: on Apply the mod rewrites those shaders
+for the new size (and resizes the background quad), so the grid and overlay cover the whole board.
+
+**Drawing on a big board is also fast now.** The game re-uploaded all three full-board layer
+textures on every mouse-move while drawing — negligible at 2048, but hundreds of megabytes per
+move at 8192 (the "it lags a lot when I draw" you'd have hit). The mod now uploads **only the
+region a stroke actually changed**, so drawing cost tracks the brush, not the board. This kicks
+in only past 2048; a default board is unchanged.
+
+## Limitations
 
 - **Square only** — an engine constraint, not a UI shortcut (see above).
 - **Big boards are heavy.** An `N×N` board is four `N×N` RGBA images plus an `N×N` render target;
-  at 8192 that's on the order of a gigabyte of image memory. Start modest (e.g. 4096).
-- **Background grid & ink-symbol overlay** are drawn by shaders that bake in `board_size = 2048`,
-  so past 2048 the decorative grid/symbols don't extend. The circuit itself renders and simulates
-  correctly across the whole board; this is cosmetic.
+  at 8192 that's on the order of a gigabyte of image memory. Start modest (e.g. 4096). Starting a
+  stroke still re-uploads the layer once (to re-sync), so the very first click of a stroke on a
+  huge board can hitch briefly; the drawing itself stays smooth.
 - **Entity-highlight hover** (during simulation) reads a `const` rect that can't be changed at
   runtime, so hovering to highlight an entity only works within the original 2048×2048 region.
 - **Loading a project** re-creates the layers at the *saved* size, which can disagree with the
