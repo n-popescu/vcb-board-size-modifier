@@ -1,0 +1,78 @@
+name: build
+
+# Build the runtime Mod Loader package (npopescu-VCBBoardSizeModifier.zip) on every commit, and
+# publish a GitHub Release automatically when the mod's version is bumped on `main`.
+#
+# The mod is pure GDScript + assets, so "building" it is just zipping mods-unpacked/ (via
+# build.sh) — no Godot export is needed. Releases are version-gated: the version comes from the
+# manifest.json (version_number), and a release is cut only when a `v<version>` tag doesn't exist
+# yet. So every version bump that lands on main ships the mod on its own, and ordinary commits
+# don't spam releases. A manual `v*` tag push also publishes.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build mod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Mod Loader zip
+        run: bash build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npopescu-VCBBoardSizeModifier
+          path: npopescu-VCBBoardSizeModifier.zip
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags to tell whether this version was already released
+
+      # Decide the tag and whether to publish.
+      - id: decide
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # Manual tag push: always publish it.
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            # Push to main: derive the tag from the manifest and publish only if new.
+            version="$(python3 -c "import json; print(json.load(open('mods-unpacked/npopescu-VCBBoardSizeModifier/manifest.json'))['version_number'])")"
+            tag="v${version}"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "This version (${tag}) is already released — skipping."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.decide.outputs.publish == 'true'
+        with:
+          name: npopescu-VCBBoardSizeModifier
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        if: steps.decide.outputs.publish == 'true'
+        with:
+          tag_name: ${{ steps.decide.outputs.tag }}
+          name: VCB Board Size Modifier ${{ steps.decide.outputs.tag }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
