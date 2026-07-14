@@ -9,11 +9,13 @@ extends "res://src/world/circuit_renderer.gd"
 #
 # So we cache the three textures and, when the drawing tool hands us the exact changed rectangle
 # (board_size_mod_arm before its emit, board_size_mod_flush after), upload only that rectangle
-# for the one changed layer via VisualServer.texture_set_data_partial. Everything else (editor
-# init, project load, resize, undo/redo, bucket, selection, the first event of each stroke) still
-# does a full rebuild identical to vanilla, so anything we don't explicitly optimize is unchanged.
-# The tool only arms this on boards larger than the default, so a normal 2048 board is byte-for-
-# byte vanilla behavior.
+# for the one changed layer via VisualServer.texture_set_data_partial. This covers every event of
+# a stroke, INCLUDING the first click — the cache is kept byte-in-sync with the layer images, so a
+# partial upload is always safe (and falls back to a full rebuild if the cache isn't ready). Only
+# non-stroke changes (editor init, project load, resize, undo/redo, bucket, selection) still do a
+# full rebuild identical to vanilla — they can touch arbitrary regions, and re-syncing the whole
+# cache there keeps the fast path exact. The tool only arms this on boards larger than the
+# default, so a normal 2048 board is byte-for-byte vanilla behavior.
 
 var _bsm_tex := {}        # Editor.LAYER int -> the ImageTexture currently bound to the shader
 var _bsm_armed := false   # a draw stroke is about to emit; skip the full rebuild, it'll flush

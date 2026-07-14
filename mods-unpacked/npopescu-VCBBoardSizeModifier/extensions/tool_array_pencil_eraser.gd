@@ -1,14 +1,16 @@
 extends "res://src/editor/tool_array_pencil_eraser.gd"
 
 # Board Size Modifier — hand the CircuitRenderer just the rectangle a stroke changed, so drawing
-# on a big board uploads O(brush) pixels per mouse-move instead of the whole board three times
-# over (see extensions/circuit_renderer.gd for why that's the lag).
+# on a big board uploads O(brush) pixels per event instead of rebuilding the whole board three
+# times over (see extensions/circuit_renderer.gd for why that full rebuild is the lag).
 #
-# We only do this while the board is larger than the default 2048 (where vanilla is already
-# fine), and only for moves within a stroke — the first event of each stroke (is_just_pressed)
-# still triggers a full rebuild, which re-syncs the cached textures so any imprecision in a
-# dirty rect can never accumulate. E.echo is synchronous, so arming before super.draw() and
-# flushing after brackets exactly the one ed_layers_resources_change that draw() emits.
+# We do this for EVERY event of a stroke — including the first click (is_just_pressed) — whenever
+# the board is larger than the default 2048 (at 2048 vanilla is already cheap, so we keep the
+# stock path). The renderer keeps its cached textures byte-in-sync with ED.images (every change
+# is uploaded, and any non-stroke edit re-syncs via a full rebuild), so a partial upload on the
+# first click is safe; if the cache isn't ready yet the renderer falls back to a full rebuild.
+# E.echo is synchronous, so arming before super.draw() and flushing after brackets exactly the
+# one ed_layers_resources_change that draw() emits.
 
 const _BSM_RENDERER_PATH := "Main/World/CircuitRenderer"
 
@@ -17,7 +19,6 @@ func draw(pixel: Vector2, is_just_pressed: bool, is_draw: bool) -> void:
 	var renderer := _bsm_renderer()
 	var use_partial: bool = (
 		renderer != null
-		and not is_just_pressed
 		and _bsm_is_big_board()
 		and renderer.has_method("board_size_mod_arm"))
 	var p0: Vector2 = last_pos
@@ -26,7 +27,12 @@ func draw(pixel: Vector2, is_just_pressed: bool, is_draw: bool) -> void:
 	.draw(pixel, is_just_pressed, is_draw)
 	if use_partial:
 		var p1: Vector2 = last_pos
-		renderer.board_size_mod_flush(ED.active_layer, _bsm_dirty_rect(p0, p1), ED.images)
+		# On the first event of a stroke vanilla only stamps the brush at the press pixel (the
+		# Bresenham segment is zero-length), so the changed region is the brush around p1 — using
+		# the p0->p1 span would give a board-crossing rect (p0 is the PREVIOUS stroke's end) and
+		# defeat the point. For mid-stroke moves the span p0->p1 is the swept segment.
+		var rect := _bsm_dirty_rect(p1, p1) if is_just_pressed else _bsm_dirty_rect(p0, p1)
+		renderer.board_size_mod_flush(ED.active_layer, rect, ED.images)
 
 
 func _bsm_renderer() -> Node:

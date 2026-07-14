@@ -67,10 +67,16 @@ Two things a resize used to *not* do, now handled:
   O(side²) upload each move (≈768 MB/move at 8192). Two **script extensions** fix it:
   `extensions/tool_array_pencil_eraser.gd` reports the exact rectangle a stroke changed, and
   `extensions/circuit_renderer.gd` uploads only that rectangle for the one changed layer via
-  `VisualServer.texture_set_data_partial`. The first event of each stroke still does a full
-  rebuild (re-sync), and it's **gated to boards larger than 2048** — a default board is
-  byte-for-byte the stock path. `E.echo` is synchronous, so arming the renderer before
-  `super.draw()` and flushing after brackets exactly the one event `draw()` emits.
+  `VisualServer.texture_set_data_partial`. This covers **every** event of a stroke, **including
+  the first click** — the cached textures are kept byte-in-sync with the layer images, so a
+  partial upload is always safe (with a full-rebuild fallback if the cache isn't ready). Only
+  **non-stroke** edits (editor init, project load, resize, undo/redo, bucket, selection) still
+  full-rebuild, which re-syncs the whole cache. It's **gated to boards larger than 2048** — a
+  default board is byte-for-byte the stock path. `E.echo` is synchronous, so arming the renderer
+  before `super.draw()` and flushing after brackets exactly the one event `draw()` emits. (The
+  `PrepassViewport` still re-renders the full board every frame — `render_target_update_mode`
+  is `UPDATE_ALWAYS` in the scene — so a constant GPU cost scales with area; that's a separate
+  render-side limitation this mod doesn't yet touch, distinct from the per-stroke upload.)
 
 **Values that are `const` in game scripts still can't be changed** from a runtime mod: notably
 `circuit_renderer.gd`'s `const CIRCUIT_RECT` (only used for entity-highlight hover — so
