@@ -32,11 +32,38 @@ const BG_BASE := 8192.0         # vanilla quad size (2048 + 2*3072) — the grid
 
 var _applying_remote := false
 
+# Late-join size sync: we hook the multiplayer mod's "player_connected" signal (once its MP autoload
+# exists) so the HOST can push the current board size to a peer that joins after a resize. Polled
+# from _process because mod load order isn't guaranteed; polling stops once hooked (or gives up if
+# the MP mod never appears, i.e. this mod is running without it).
+var _mp_hooked := false
+var _mp_poll_frames := 0
+const _MP_POLL_LIMIT := 3600   # ~1 min at 60 fps, then stop looking for the MP mod
+
 # Pristine shader sources, cached on first use so repeated resizes always patch from vanilla.
 var _bg_src := ""
 var _ink_src := ""
 var _bg_src_loaded := false
 var _ink_src_loaded := false
+
+
+func _ready() -> void:
+	# Poll for the multiplayer mod's MP autoload so we can hook late-join size sync (see _process).
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	if _mp_hooked:
+		set_process(false)
+		return
+	_mp_poll_frames += 1
+	var mp := get_tree().root.get_node_or_null("MP")
+	if mp != null and mp.has_signal("player_connected"):
+		mp.connect("player_connected", self, "_on_mp_player_connected")
+		_mp_hooked = true
+		set_process(false)
+	elif _mp_poll_frames > _MP_POLL_LIMIT:
+		set_process(false)  # MP mod isn't present; this mod works fine standalone
 
 
 func get_current_side() -> int:
@@ -123,7 +150,14 @@ func apply_board_size(side: int, do_broadcast: bool) -> void:
 	#    draw outside of. This rebuilds those shaders for the new side.
 	_apply_board_textures(side)
 
-	# 5) Mirror to the multiplayer peer, if a live session exists.
+	# 5) If the multiplayer mod's board-sync is loaded, invalidate its cached tile layout so a later
+	#    "Recheck board sync" recomputes tiles at the NEW size (its digest is size-relative and would
+	#    otherwise bail on a size mismatch). Best-effort + soft (has_method): no-op when MP is absent.
+	var mpds := get_tree().root.get_node_or_null("MPDrawSync")
+	if mpds != null and mpds.has_method("_reset_digest"):
+		mpds._reset_digest()
+
+	# 6) Mirror to the multiplayer peer, if a live session exists.
 	if do_broadcast and not _applying_remote:
 		_broadcast(side)
 
@@ -323,6 +357,23 @@ func _broadcast(side: int) -> void:
 	if not _live_session():
 		return
 	rpc("_rpc_apply_size", side)
+
+
+# A peer joined. If WE are the host and the board is a non-default size, push our current size to
+# the newcomer so a LATE joiner's board matches ours — the multiplayer board-content sync (the
+# host's "Recheck board sync") only works once both boards are the same size. At the default size
+# there's nothing to sync (the joiner already starts there). Only the host acts; the joiner's own
+# player_connected for the host is ignored here.
+func _on_mp_player_connected(id) -> void:
+	var mp := get_tree().root.get_node_or_null("MP")
+	if mp == null or not bool(mp.get("is_host")):
+		return
+	if get_tree().network_peer == null:
+		return
+	var side := get_current_side()
+	if side == MIN_SIDE:
+		return
+	rpc_id(int(id), "_rpc_apply_size", side)
 
 
 remote func _rpc_apply_size(side: int) -> void:
