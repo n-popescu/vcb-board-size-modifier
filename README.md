@@ -5,11 +5,12 @@ A runtime [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) m
 lets you **grow the board past the default 2048×2048**, live, from inside the game — no save/load
 round-trip needed.
 
-It adds a **"Board"** button to the toolbar that opens a small window with **Width** and
-**Height** fields and an **Apply** button. Existing board content is preserved. It's
+It adds a **"Board"** button to the toolbar that opens a small window with a single **Board
+size** field and an **Apply** button. Existing board content is preserved. It's
 **compatible with the [VCB Multiplayer](https://github.com/n-popescu/vcb-multiplayer) mod**: when
-a multiplayer session is live, one player's resize is mirrored to the other so both boards stay
-the same size.
+a multiplayer session is live, the size field is **mirrored to the other player as you type**
+(before you even press Apply, so the two players can't end up on different numbers), and Apply
+resizes both boards.
 
 Like the multiplayer mod, this is **pure GDScript** and loads at runtime — it **never replaces
 `vcb.pck`** and adds its own nodes at runtime, so it coexists with other Mod Loader mods.
@@ -24,10 +25,9 @@ same code uses that single `side` for **both** axes (its pixel scan loops `x, y`
 so the board must be **square**. A non-square image would silently truncate (if taller) or read
 out of bounds (if wider).
 
-So this mod always produces a **square `side × side` board**. The window still has two fields to
-match how people think about it; if you enter different values it uses the **larger** one and
-tells you it squared it. Range is **2048 – 8192** (2048 minimum by design; 8192 is a soft cap —
-larger boards use a lot of memory, see *Limitations*).
+So this mod always produces a **square `side × side` board**. The window has a single **Board
+size** field (2048 minimum by design; 8192 is a soft cap — larger boards use a lot of memory,
+see *Limitations*).
 
 ## Install & run
 
@@ -54,8 +54,10 @@ VCB caches the board size in a lot of places. On **Apply**, the mod reconfigures
 - the `Camera` pan limits, the `Board` panel, and the `CircuitRenderer` prepass viewport + rects.
 
 All of this happens from the mod's own nodes; no game file is edited. Multiplayer sync is a single
-node at `/root/BoardSizeSync` with a `remote` RPC, riding the same ENet peer the multiplayer mod
-already set up.
+node at `/root/BoardSizeSync` with `remote` RPCs, riding the same ENet peer the multiplayer mod
+already set up: the **field value is mirrored live as you type** (so both players share one pending
+number), and **Apply resizes both boards**. With the multiplayer mod absent it simply resizes
+locally.
 
 ## Limitations (v1)
 
@@ -69,8 +71,9 @@ already set up.
   runtime, so hovering to highlight an entity only works within the original 2048×2048 region.
 - **Loading a project** re-creates the layers at the *saved* size, which can disagree with the
   render pipeline's current size until you Apply again. Resizing is meant for the live session.
-- **Multiplayer:** resize once both players are connected; a client that joins later isn't
-  auto-told the current size (same limitation as project-load sync in the multiplayer mod).
+- **Multiplayer:** both players need this mod installed. The size field syncs live and Apply
+  resizes both boards; a client that joins *after* a resize isn't auto-told the current size (same
+  limitation as project-load sync in the multiplayer mod), so resize once both are connected.
 
 ## Building
 

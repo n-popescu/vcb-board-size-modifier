@@ -1,17 +1,19 @@
 extends WindowDialog
 
-# board_size_window.gd — the little "Board Size" window: two labelled fields (Width / Height)
-# and an Apply button. VCB boards are square, so Apply uses a single side (the larger of the two
-# entered values, clamped to [MIN_SIDE, MAX_SIDE]) and reports what it did in a status line.
+# board_size_window.gd — the "Board Size" window: a single "Board size" field + Apply.
 #
-# It talks to the resizer node at /root/BoardSizeSync; it does not touch board state directly.
+# VCB boards are square, so there is one side value (2048–8192). When a multiplayer session is
+# live, the field value is mirrored to the other player *as you type* (before Apply) so both
+# players always see the same pending number and can't drift apart; Apply then resizes both
+# boards. It talks to the resizer node at /root/BoardSizeSync; it never touches board state
+# directly.
 
 const MIN_SIDE := 2048
 const MAX_SIDE := 8192
 
-var _width_edit: LineEdit
-var _height_edit: LineEdit
+var _size_edit: LineEdit
 var _status: Label
+var _suppress_broadcast := false
 
 
 func _ready() -> void:
@@ -34,13 +36,24 @@ func _ready() -> void:
 
 	var note := Label.new()
 	note.text = ("Grow the board past 2048×2048.\n"
-		+ "Boards are square, so width = height.\n"
-		+ "Range: 2048–8192. Existing content is kept.")
+		+ "Boards are square (one size). Range: 2048–8192.\n"
+		+ "Existing content is kept.")
 	note.autowrap = true
 	vb.add_child(note)
 
-	_width_edit = _add_field(vb, "Width")
-	_height_edit = _add_field(vb, "Height")
+	var row := HBoxContainer.new()
+	row.add_constant_override("separation", 8)
+	var lbl := Label.new()
+	lbl.text = "Board size"
+	lbl.rect_min_size = Vector2(80, 0)
+	row.add_child(lbl)
+	_size_edit = LineEdit.new()
+	_size_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_size_edit.align = LineEdit.ALIGN_RIGHT
+	_size_edit.connect("text_changed", self, "_on_text_changed")
+	_size_edit.connect("text_entered", self, "_on_text_entered")
+	row.add_child(_size_edit)
+	vb.add_child(row)
 
 	var apply_btn := Button.new()
 	apply_btn.text = "Apply"
@@ -55,22 +68,6 @@ func _ready() -> void:
 	reflect_side(_current_side())
 
 
-func _add_field(parent: Node, label_text: String) -> LineEdit:
-	var row := HBoxContainer.new()
-	row.add_constant_override("separation", 8)
-	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.rect_min_size = Vector2(64, 0)
-	row.add_child(lbl)
-	var edit := LineEdit.new()
-	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	edit.align = LineEdit.ALIGN_RIGHT
-	edit.connect("text_entered", self, "_on_text_entered")
-	row.add_child(edit)
-	parent.add_child(row)
-	return edit
-
-
 # Toggle from the toolbar button.
 func toggle() -> void:
 	if visible:
@@ -78,15 +75,28 @@ func toggle() -> void:
 	else:
 		reflect_side(_current_side())
 		_set_status("")
-		popup_centered(Vector2(320, 230))
+		popup_centered(Vector2(320, 200))
 
 
-# Set both fields to the given side (used on open + after a remote resize).
+# Set the field to a concrete side (on open + after a resize). Does not broadcast.
 func reflect_side(side: int) -> void:
-	if _width_edit != null:
-		_width_edit.text = str(side)
-	if _height_edit != null:
-		_height_edit.text = str(side)
+	_set_text_silently(str(side))
+
+
+# Set the field to whatever the other player typed (raw text). Does not broadcast.
+func set_pending_text(text: String) -> void:
+	_set_text_silently(text)
+
+
+func _set_text_silently(text: String) -> void:
+	if _size_edit == null:
+		return
+	_suppress_broadcast = true
+	_size_edit.text = text
+	# Don't yank the caret if the local user is mid-edit; only reposition when unfocused.
+	if not _size_edit.has_focus():
+		_size_edit.caret_position = text.length()
+	_suppress_broadcast = false
 
 
 func _current_side() -> int:
@@ -100,17 +110,24 @@ func _resizer() -> Node:
 	return get_tree().root.get_node_or_null("BoardSizeSync")
 
 
+# Live-mirror the field value to the peer as the user types (before Apply).
+func _on_text_changed(new_text: String) -> void:
+	if _suppress_broadcast:
+		return
+	var resizer := _resizer()
+	if resizer != null and resizer.has_method("broadcast_pending_text"):
+		resizer.broadcast_pending_text(new_text)
+
+
 func _on_text_entered(_text: String) -> void:
 	_on_apply()
 
 
 func _on_apply() -> void:
-	var w := _parse(_width_edit)
-	var h := _parse(_height_edit)
-	if w < 0 or h < 0:
-		_set_status("Enter whole numbers for width and height.")
+	var side := _parse(_size_edit)
+	if side < 0:
+		_set_status("Enter a whole number.")
 		return
-	var side := int(max(w, h))
 	if side < MIN_SIDE:
 		_set_status("Minimum board size is " + str(MIN_SIDE) + " — smaller values aren't allowed.")
 		return
@@ -125,10 +142,7 @@ func _on_apply() -> void:
 		return
 	var applied := int(resizer.request_resize(side))
 	reflect_side(applied)
-	var msg := "Board set to " + str(applied) + "×" + str(applied) + "."
-	if w != h:
-		msg += "  (squared to the larger side)"
-	_set_status(msg)
+	_set_status("Board set to " + str(applied) + "×" + str(applied) + ".")
 
 
 func _parse(edit: LineEdit) -> int:

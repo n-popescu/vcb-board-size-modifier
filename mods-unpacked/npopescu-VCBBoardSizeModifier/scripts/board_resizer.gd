@@ -175,13 +175,19 @@ func _n(rel: String) -> Node:
 
 
 # --- multiplayer sync ---------------------------------------------------------------------
-func _broadcast(side: int) -> void:
+# True when a live multiplayer session exists (the VCB Multiplayer mod is loaded, connected and
+# in-game). Queried via get_node_or_null + Object.get so this mod also works with MP absent.
+func _live_session() -> bool:
 	var mp := get_tree().root.get_node_or_null("MP")
 	if mp == null:
-		return
+		return false
 	if get_tree().network_peer == null:
-		return
-	if not (mp.get("is_connected") and mp.get("is_game_started")):
+		return false
+	return bool(mp.get("is_connected")) and bool(mp.get("is_game_started"))
+
+
+func _broadcast(side: int) -> void:
+	if not _live_session():
 		return
 	rpc("_rpc_apply_size", side)
 
@@ -193,6 +199,20 @@ remote func _rpc_apply_size(side: int) -> void:
 	var win := _window()
 	if win != null and win.has_method("reflect_side"):
 		win.reflect_side(int(side))
+
+
+# Live-mirror the pending field text (as the other player types, before Apply) so both players'
+# fields always show the same value. Sends the raw text — clamping happens only on Apply.
+func broadcast_pending_text(text: String) -> void:
+	if not _live_session():
+		return
+	rpc("_rpc_set_pending_size", text)
+
+
+remote func _rpc_set_pending_size(text) -> void:
+	var win := _window()
+	if win != null and win.has_method("set_pending_text"):
+		win.set_pending_text(str(text))
 
 
 func _window() -> Node:
