@@ -25,10 +25,15 @@ func _init() -> void:
 	ModLoaderLog.info("Installing VCB Board Size Modifier…", MOD_DIR)
 	# Script extensions that make drawing on a grown board fast: the tool reports the changed
 	# rectangle and the renderer uploads only that region (instead of the whole board, three
-	# textures, every mouse-move). They no-op at the default 2048 size, so a stock board is
+	# textures, every mouse-move) AND renders the full-board prepass viewport on demand while
+	# editing (instead of every frame). They no-op at the default 2048 size, so a stock board is
 	# unaffected. See extensions/circuit_renderer.gd.
 	ModLoaderMod.install_script_extension(EXTENSIONS + "/circuit_renderer.gd")
 	ModLoaderMod.install_script_extension(EXTENSIONS + "/tool_array_pencil_eraser.gd")
+	# Save/restore the board size inside .vcb projects (via a generic "modded" section any mod can
+	# use — see scripts/mod_save_registry.gd). Hooks the game's file save/open; file_system.gd is
+	# extended by nothing else, so this is collision-free.
+	ModLoaderMod.install_script_extension(EXTENSIONS + "/file_system.gd")
 
 
 func _ready() -> void:
@@ -58,6 +63,15 @@ func _process(_delta: float) -> void:
 func _build(root: Node, main: Node) -> void:
 	var theme_res = load(MAIN_THEME)
 
+	# Generic "modded save" registry at /root/ModSaveData: lets any mod persist its own data inside
+	# saved .vcb projects (this mod stores the board size). extensions/file_system.gd drives it.
+	var registry: Node = root.get_node_or_null("ModSaveData")
+	if registry == null:
+		registry = _new_script(SCRIPTS + "/mod_save_registry.gd")
+		if registry != null:
+			registry.name = "ModSaveData"
+			root.add_child(registry)
+
 	# The resizer + MP sync node at a stable path so rpc() resolves on both peers.
 	if root.get_node_or_null("BoardSizeSync") == null:
 		var resizer = _new_script(SCRIPTS + "/board_resizer.gd")
@@ -65,6 +79,11 @@ func _build(root: Node, main: Node) -> void:
 			return
 		resizer.name = "BoardSizeSync"
 		root.add_child(resizer)
+
+	# Register the board size as this mod's saved-project data.
+	var resizer_node := root.get_node_or_null("BoardSizeSync")
+	if registry != null and resizer_node != null and registry.has_method("register_provider"):
+		registry.register_provider(MOD_DIR, resizer_node, "mod_save_data", "mod_load_data")
 
 	# The window, on its own CanvasLayer so it floats above the board. Built detached, then the
 	# whole layer is added to Main — which fires the window's _ready (after the resizer exists).

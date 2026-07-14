@@ -45,9 +45,9 @@ reconfigures every **mutable** one, in this order, then rebuilds the board:
    `Main/World/CircuitRenderer` (its `rect_size`, `PrepassViewport.size`, and the
    `PrepassColorRect / DownsamplingPostProcessing / InkSymbolsOverlay` min sizes).
 
-### 2a. Board TEXTURE + draw performance (v1.2.0)
+### 2a. Board TEXTURE + draw performance (v1.2.0, v1.3.0, v1.4.0)
 
-Two things a resize used to *not* do, now handled:
+Three things a resize used to *not* do, now handled:
 
 - **The board texture grows with the board.** The visible board (the tinted, grid-lined
   square) is drawn by `background.shader`, and the ink-symbol tiling by
@@ -76,6 +76,56 @@ Two things a resize used to *not* do, now handled:
   **gated to boards larger than 2048** — a default board is byte-for-byte the stock path. `E.echo`
   is synchronous, so arming the renderer before `super.draw()` and flushing after brackets exactly
   the one event `draw()` emits.
+- **The full-board prepass renders on demand while editing (v1.4.0).** The board is composited
+  through a full-board `Viewport` (`Main/World/CircuitRenderer/PrepassViewport`) whose scene
+  `render_target_update_mode` is `UPDATE_ALWAYS` (3) — it re-renders the **whole board every
+  frame**, a constant O(side²) GPU cost independent of drawing. That's why even panning/hovering
+  (and *drawing*, because the whole app is frame-capped by it) lagged on a big board, beyond the
+  per-move upload. In **edit mode the prepass output is static**: `circuit_renderer.shader`'s only
+  per-frame term (the entity-highlight pulse `sin(TIME…)`) is gated behind
+  `is_render_mode_simulation`, and the VMEM/VInput blinkers `set_process(false)` outside
+  simulation. So `extensions/circuit_renderer.gd` switches the prepass to **`UPDATE_ONCE`
+  per change** while editing a grown board (kicked from the layer/mode/palette/draw handlers and
+  the partial-upload flush; repeated kicks in a frame coalesce to one render), and restores vanilla
+  `UPDATE_ALWAYS` during **simulation** (state animates every tick) and at the default **2048**
+  size. The two niche edit-mode animations (VMEM / VInput pixel blink) briefly force continuous
+  rendering (`_ev_vd_v*_pixels_blink` → ~2 s window) so they aren't frozen. **This does not shrink
+  a single prepass render** — a full-board render still happens on each edit — so a fast continuous
+  drag can still cost one full-board render per changed frame; the win is that idle/pan/zoom/hover
+  cost drops to ~zero and the editor is no longer permanently frame-capped by the prepass.
+
+**Why not tile/chunk the render (the "only re-render the 2048² region I touched" idea)?** Not
+feasible from a *runtime* mod: the board is rendered through **one** full-board `Viewport` texture
+that every downstream stage samples as a whole (`DepthPostProcessing`/`DownsamplingPostProcessing`
+by UV, `InkSymbolsOverlay`, and the simulation renderer), and Godot 3.5 has no partial-viewport
+render. Splitting it into tiles means rebuilding the whole render pipeline + all its shaders (and
+would complicate simulation + the MP board digest), which is an **engine-level** change
+(`vcb-rebuild` / `vcb-engine-recovery`), not a drop-in mod. The on-demand prepass is the best a
+runtime mod can do.
+
+### 2b. Modded project data in saved `.vcb` files (v1.4.0)
+
+`.vcb` projects are JSON. This mod adds one optional top-level object, **`"modded"`**, so any mod
+can persist its own state inside a saved project without the mods knowing about each other:
+
+```json
+"modded": { "npopescu-VCBBoardSizeModifier": { "side": 4096 } }
+```
+
+- **Generic registry** at `/root/ModSaveData` (`scripts/mod_save_registry.gd`): a mod calls
+  `register_provider(mod_id, target, save_method, load_method)`; `collect()` builds the object on
+  save, `dispatch(modded)` hands each provider its own sub-object on open. If `"modded"` is
+  absent/empty, no mod stored anything → the file is a plain vanilla project.
+- **Hook** in `extensions/file_system.gd` (a script nothing else extends): `save_file()` sets
+  `project["modded"]` before the game serializes (or **deletes** the key when empty, so a
+  default-size board still writes a byte-vanilla file); autosaves use the game's skeleton and
+  intentionally omit it. `open_file()` runs vanilla load, then `dispatch()`es the modded section
+  and calls `board_resizer.reconcile_to_loaded_layers()`.
+- **Board size on load** comes from either the `"modded"` `side` or — bullet-proof fallback, also
+  covering older/grown saves with no modded section — the **loaded layer image width** (the `.vcb`
+  stores each layer's own width/height; `load_compressed_layers` deserializes at that size while
+  the rest of the engine would otherwise stay at 2048). `reconcile_to_loaded_layers()` resizes the
+  engine to match the loaded layers; it's idempotent with the modded dispatch.
 
 **Values that are `const` in game scripts still can't be changed** from a runtime mod: notably
 `circuit_renderer.gd`'s `const CIRCUIT_RECT` (only used for entity-highlight hover — so
@@ -100,6 +150,19 @@ MP's `is_connected` + `is_game_started` true — all via `get_node_or_null` / `O
 the mod still works with the multiplayer mod absent). Both players must have this mod installed
 for the RPCs to resolve.
 
+- **Late-join size sync (v1.4.0).** The live mirroring above only reaches peers already in the
+  session. A peer that joins *after* the host grew the board starts on a fresh 2048 board, and the
+  MP board-content sync (its tiled digest) refuses to run while the two sizes differ. So the
+  resizer connects to MP's `player_connected` / `game_started` signals (retried for a short while
+  after `_ready`, since MP is built by a separate mod), and — **as the host, on a grown board** —
+  pushes `_rpc_apply_size(current)` to the newcomer (`rpc_id`) / all peers (on game start), after a
+  short delay so the joiner's on-connect `new_file()` has settled. The joiner then matches the
+  host's size before the host's board-content sync runs. All MP lookups are `get_node_or_null` /
+  `Object.get`, so this is inert without the multiplayer mod.
+
+Loading a project (`mod_load_data` / `reconcile_to_loaded_layers`) resizes **locally only**
+(`do_broadcast = false`); the late-join push handles getting a peer to the host's size.
+
 ## 4. Engine / GDScript constraints
 
 - **Godot 3.5.1**, GDScript 3.5 semantics — **not** Godot 4. No Godot-4 syntax.
@@ -118,15 +181,19 @@ for the RPCs to resolve.
 build.sh                      → npopescu-VCBBoardSizeModifier.zip
 mods-unpacked/npopescu-VCBBoardSizeModifier/
 ├── manifest.json             Mod Loader manifest (id = npopescu-VCBBoardSizeModifier)
-├── mod_main.gd               installs the draw-perf extensions, then waits for Main and builds
-│                             the /root/BoardSizeSync node + window + toolbar button
+├── mod_main.gd               installs the extensions, then waits for Main and builds the
+│                             /root/ModSaveData + /root/BoardSizeSync nodes + window + toolbar btn
 ├── scripts/
-│   ├── board_resizer.gd      the resize routine (incl. board-texture shader rebuild) + the
-│   │                         /root/BoardSizeSync MP RPC node
+│   ├── board_resizer.gd      the resize routine (incl. board-texture shader rebuild), the
+│   │                         /root/BoardSizeSync MP RPC node (live + late-join size sync), and
+│   │                         the modded-save provider (mod_save_data / mod_load_data / reconcile)
+│   ├── mod_save_registry.gd  generic /root/ModSaveData registry (any mod persists data in .vcb)
 │   └── gui/board_size_window.gd   the WindowDialog: a single Board size field + Apply
-└── extensions/               script extensions (installed in mod_main _init) for draw perf
-    ├── circuit_renderer.gd        caches the layer textures + partial-uploads the changed rect
-    └── tool_array_pencil_eraser.gd   reports the changed rect around a stroke to the renderer
+└── extensions/               script extensions (installed in mod_main _init)
+    ├── circuit_renderer.gd        caches layer textures + partial-uploads the changed rect, and
+    │                              renders the full-board prepass on demand while editing
+    ├── tool_array_pencil_eraser.gd   reports the changed rect around a stroke to the renderer
+    └── file_system.gd             reads/writes the "modded" section on project open/save
 ```
 
 The extensions are installed with `ModLoaderMod.install_script_extension` in `mod_main`'s

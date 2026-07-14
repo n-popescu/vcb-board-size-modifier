@@ -31,12 +31,20 @@ const BG_PAD := 3072            # padding kept around the board inside the backg
 const BG_BASE := 8192.0         # vanilla quad size (2048 + 2*3072) — the grid's reference scale
 
 var _applying_remote := false
+var _mp_connected := false
 
 # Pristine shader sources, cached on first use so repeated resizes always patch from vanilla.
 var _bg_src := ""
 var _ink_src := ""
 var _bg_src_loaded := false
 var _ink_src_loaded := false
+
+
+func _ready() -> void:
+	# Watch for a multiplayer session so a peer that joins AFTER we've grown the board still gets
+	# our size (the MP board-content sync requires equal sizes). MP is built by a separate mod and
+	# may come up a little after us, so retry the connection for a short while.
+	_bsm_connect_mp_deferred()
 
 
 func get_current_side() -> int:
@@ -353,3 +361,98 @@ func _window() -> Node:
 	if main == null:
 		return null
 	return main.find_node("BoardSizeWindow", true, false)
+
+
+# --- multiplayer late-join size sync ------------------------------------------------------
+# The live resize mirroring above only reaches peers already in the session. A peer that joins
+# AFTER we grew the board starts on a fresh 2048 board, and the MP board-content sync refuses to
+# run while the two sizes differ. So, as the host, we push our current size to a newcomer (and on
+# game start) so its board matches ours before any content sync.
+func _bsm_connect_mp_deferred() -> void:
+	# /root/MP is created by the multiplayer mod, possibly a few frames after us. Poll briefly.
+	for _i in range(60):
+		if _bsm_try_connect_mp():
+			return
+		yield(get_tree(), "idle_frame")
+
+
+func _bsm_try_connect_mp() -> bool:
+	if _mp_connected:
+		return true
+	var mp := get_tree().root.get_node_or_null("MP")
+	if mp == null:
+		return false
+	if mp.has_signal("player_connected") and not mp.is_connected("player_connected", self, "_bsm_on_mp_player_connected"):
+		mp.connect("player_connected", self, "_bsm_on_mp_player_connected")
+	if mp.has_signal("game_started") and not mp.is_connected("game_started", self, "_bsm_on_mp_game_started"):
+		mp.connect("game_started", self, "_bsm_on_mp_game_started")
+	_mp_connected = true
+	return true
+
+
+func _bsm_on_mp_player_connected(id: int) -> void:
+	_bsm_push_size(int(id))
+
+
+func _bsm_on_mp_game_started() -> void:
+	_bsm_push_size(0)
+
+
+func _bsm_push_size(target_id: int) -> void:
+	if not _bsm_is_host_session():
+		return
+	var side := get_current_side()
+	if side <= MIN_SIDE:
+		return  # default size — nothing to sync
+	# Let the newcomer's on-connect new_file() settle before we resize its board.
+	yield(get_tree().create_timer(0.5), "timeout")
+	if not _bsm_is_host_session() or get_tree().network_peer == null:
+		return
+	if int(target_id) == 0:
+		rpc("_rpc_apply_size", side)
+	else:
+		rpc_id(int(target_id), "_rpc_apply_size", side)
+
+
+func _bsm_is_host_session() -> bool:
+	var mp := get_tree().root.get_node_or_null("MP")
+	if mp == null or get_tree().network_peer == null:
+		return false
+	return bool(mp.get("is_host")) and bool(mp.get("is_connected"))
+
+
+# --- modded save data ---------------------------------------------------------------------
+# Persist the board size inside saved .vcb projects via the generic /root/ModSaveData registry
+# (see scripts/mod_save_registry.gd + extensions/file_system.gd). Registered from mod_main.
+
+# What we store under modded["npopescu-VCBBoardSizeModifier"]. Returns {} at the default size so a
+# normal board still writes a byte-vanilla file (an empty/absent "modded" section).
+func mod_save_data() -> Dictionary:
+	var side := get_current_side()
+	if side <= MIN_SIDE:
+		return {}
+	return {"side": side}
+
+
+# Apply our slice of a loaded file's modded section: resize to the saved board size.
+func mod_load_data(data) -> void:
+	if typeof(data) != TYPE_DICTIONARY or not data.has("side"):
+		return
+	var side := clamp_side(int(data["side"]))
+	if side != get_current_side():
+		apply_board_size(side, false)
+
+
+# Safety net after any project load: the loaded layer images carry the true board size in the
+# .vcb, so make the engine match them even for files with no "modded" section (older/grown saves).
+# No-op when already consistent.
+func reconcile_to_loaded_layers() -> void:
+	var editor := _editor()
+	if editor == null:
+		return
+	var imgs = editor.get("images")
+	if typeof(imgs) != TYPE_ARRAY or imgs.empty() or not (imgs[0] is Image):
+		return
+	var loaded := clamp_side(int(imgs[0].get_width()))
+	if loaded != get_current_side():
+		apply_board_size(loaded, false)
