@@ -132,6 +132,33 @@ func toggle() -> void:
 		_set_status("")
 		popup_centered()
 		set_as_minsize()  # shrink to the content's min size, like the stock dialogs
+		# Containers only recompute their minimum size on the NEXT idle frame, so the
+		# set_as_minsize() above runs on the stale (pre-layout) size and leaves the popup TALLER
+		# than its visible content — an empty, invisible dead zone that extends beneath everything
+		# (and still eats clicks). This is the exact bug the multiplayer window hit; the fix is the
+		# same (see mp_window.gd::_refit, the canonical popup skeleton). Re-fit once the layout has
+		# settled so the panel hugs its content.
+		_refit()
+
+
+# Shrink the popup to its currently-visible content and re-center, AFTER the containers have
+# recomputed their minimum size (next idle frame). No-ops if the window was hidden meanwhile.
+func _refit() -> void:
+	yield(get_tree(), "idle_frame")
+	if not visible:
+		return
+	set_as_minsize()
+	_center()
+
+
+func _center() -> void:
+	var ws: Vector2 = get_viewport().get_visible_rect().size
+	# Match the flux popup helper's centering (it uses the UI-scaled viewport size) so the re-fit
+	# doesn't shift the box away from where the entrance animation placed it.
+	var u = get_tree().root.get_node_or_null("U")
+	if u != null and u.has_method("get_global_viewport_size_scaled"):
+		ws = u.get_global_viewport_size_scaled()
+	rect_position = ((ws - rect_size) / 2.0).floor()
 
 
 # Set the field to a concrete side (on open + after a resize). Does not broadcast.

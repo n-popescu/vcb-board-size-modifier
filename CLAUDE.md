@@ -168,6 +168,37 @@ A **non-empty** `"modded"` marks a file as "made with mods"; an empty/absent one
   layer's own width (robust for older files / autosaves). In a live MP session the load-resize
   broadcasts, so opening a sized project on the host also resizes the peer.
 
+## 3b. If you add a `Popup` dialog UI — avoid the "empty space beneath everything" bug
+
+Any mod window built as a `Popup` whose content is a container (VBox/PanelContainer, as ours and
+the multiplayer window are) must **re-fit on the next idle frame**, or it opens with a tall,
+invisible dead zone hanging below the visible content (it looks like "a zone beneath everything
+that extends", and it still swallows clicks). Why: `set_as_minsize()` runs *synchronously*, but a
+container only recomputes its `rect_min_size` on the **next idle frame** — so calling
+`set_as_minsize()` right after `popup_centered()` sizes the popup to the *stale, pre-layout*
+minimum (usually too tall). The one-liner fix, applied on every open (and again whenever the set of
+visible child sections changes):
+
+```gdscript
+popup_centered()
+set_as_minsize()
+_refit()               # yield(get_tree(), "idle_frame"); set_as_minsize(); re-center
+
+func _refit() -> void:
+	yield(get_tree(), "idle_frame")
+	if not visible:
+		return
+	set_as_minsize()
+	_center()          # re-center against U.get_global_viewport_size_scaled() to match flux
+```
+
+> **The canonical popup skeleton is the multiplayer window** —
+> `vcb-multiplayer/.../scripts/gui/mp_window.gd` (`open_window` / `_refit` / `_center`). Copy that
+> shape for any new popup: a `PanelContainer` + `MarginContainer` + `VBoxContainer` styled with the
+> dark `StyleBoxFlat`, presented via `res://src/gui/flux/flux_mod_popup.tscn` for the shared dimmed
+> backdrop + scale/fade entrance, and re-fit as above. This mod's own `board_size_window.gd` keeps
+> the same fix even though its UI has since moved into the sidebar (see §5) — don't regress it.
+
 ## 4. Engine / GDScript constraints
 
 - **Godot 3.5.1**, GDScript 3.5 semantics — **not** Godot 4. No Godot-4 syntax.
