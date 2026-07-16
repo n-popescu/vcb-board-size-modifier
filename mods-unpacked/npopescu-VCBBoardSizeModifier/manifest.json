@@ -1,9 +1,9 @@
 {
 	"name": "VCBBoardSizeModifier",
 	"namespace": "npopescu",
-	"version_number": "1.4.1",
+	"version_number": "1.5.0",
 	"website_url": "https://github.com/n-popescu/vcb-board-size-modifier",
-	"description": "Resize the Virtual Circuit Board board past the default 2048x2048. Adds a toolbar 'Board' button opening a small window with a single Board size field and an Apply button (boards are square). Range 2048-8192; existing content is preserved. The board texture (grid + ink-symbol overlay) grows with the board, and drawing on a large board stays fast (only the changed region is re-uploaded). Compatible with the VCB Multiplayer mod - the size field is mirrored to the other player live as you type, and Apply resizes both boards.",
+	"description": "Resize the Virtual Circuit Board board past the default 2048x2048. Adds a 'Board' category to the circuit-editor side panel (between Cursor Info and Inks) with a small Board size field and an Apply button (boards are square). Minimum 2048 with no hard upper cap - the size is effectively unbounded, but bigger boards need a more powerful PC (recommended max 8192); existing content is preserved. The board texture (grid + ink-symbol overlay) grows with the board, and drawing on a large board stays fast (only the changed region is re-uploaded). Compatible with the VCB Multiplayer mod - the size field is mirrored to the other player live as you type, and Apply resizes both boards.",
 	"dependencies": [],
 	"extra": {
 		"godot": {

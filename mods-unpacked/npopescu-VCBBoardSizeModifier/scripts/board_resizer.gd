@@ -5,7 +5,11 @@ extends Node
 # VCB's board is SQUARE: the native compiler takes side = image.width and uses it for BOTH axes
 # (see vcb-engine-recovery/docs/compiler_pipeline.md — "Circuits are square, so side is used for
 # both dimensions"). A non-square image would truncate (tall) or read out of bounds (wide), so
-# this only ever produces a square side x side board, side in [MIN_SIDE, MAX_SIDE].
+# this only ever produces a square side x side board, side >= MIN_SIDE (there is no hard upper cap
+# — bigger boards just cost more GPU/RAM; the UI recommends staying at/under 8192).
+#
+# It also injects the "Board" category into the circuit-editor side panel (see _maybe_build_panel):
+# a small size field + Apply, sitting between the "Cursor Info" card and the "Inks" zone.
 #
 # apply_board_size() reconfigures every piece of board-size state the game caches — the shared
 # C.CIRCUIT const dict (mutable at runtime in GDScript 3.5) and the cached copies on the Editor /
@@ -17,8 +21,12 @@ extends Node
 # has a live peer, one player's resize is mirrored to the other over the same ENet peer (keeping
 # both boards the same size, which the multiplayer mirroring requires).
 
-const MIN_SIDE := 2048
-const MAX_SIDE := 8192
+const MIN_SIDE := 2048          # floor: the board is never smaller than the vanilla default
+# No MAX_SIDE: the board size is uncapped ("infinite"). Larger boards just need a more powerful PC;
+# the side-panel UI surfaces a recommended-max hint (8192) rather than a hard limit.
+
+# The "Board" side-panel category script (built lazily into the circuit editor — see _maybe_build_panel).
+const PANEL_SCRIPT := "res://mods-unpacked/npopescu-VCBBoardSizeModifier/scripts/gui/board_panel.gd"
 
 # Board-texture shaders. The visible board (the tinted, grid-lined square) is drawn by the
 # background shader on a padded quad; the ink-symbol overlay tiles per board pixel. Both bake
@@ -40,6 +48,12 @@ var _mp_hooked := false
 var _mp_poll_frames := 0
 const _MP_POLL_LIMIT := 3600   # ~1 min at 60 fps, then stop looking for the MP mod
 
+# The injected "Board" side-panel category. Built lazily (the side panel may not exist yet, and can
+# be re-created by docking), and re-resolved if it vanishes. Throttled so the recursive find_node
+# runs at most ~once a second.
+var _panel = null
+var _panel_accum := 0.0
+
 # Pristine shader sources, cached on first use so repeated resizes always patch from vanilla.
 var _bg_src := ""
 var _ink_src := ""
@@ -48,22 +62,63 @@ var _ink_src_loaded := false
 
 
 func _ready() -> void:
-	# Poll for the multiplayer mod's MP autoload so we can hook late-join size sync (see _process).
+	# Keep processing: we hook the multiplayer mod's late-join size sync once (below) AND keep the
+	# "Board" side-panel category alive (rebuilt if it's ever removed, e.g. by re-docking).
 	set_process(true)
 
 
-func _process(_delta: float) -> void:
-	if _mp_hooked:
-		set_process(false)
+func _process(delta: float) -> void:
+	_maybe_hook_mp()
+	_maybe_build_panel(delta)
+
+
+# Poll for the multiplayer mod's MP autoload so we can hook late-join size sync. Load order isn't
+# guaranteed; polling stops once hooked (or gives up if the MP mod never appears — standalone use).
+func _maybe_hook_mp() -> void:
+	if _mp_hooked or _mp_poll_frames > _MP_POLL_LIMIT:
 		return
 	_mp_poll_frames += 1
 	var mp := get_tree().root.get_node_or_null("MP")
 	if mp != null and mp.has_signal("player_connected"):
 		mp.connect("player_connected", self, "_on_mp_player_connected")
 		_mp_hooked = true
-		set_process(false)
-	elif _mp_poll_frames > _MP_POLL_LIMIT:
-		set_process(false)  # MP mod isn't present; this mod works fine standalone
+
+
+# Inject the "Board" category into the circuit-editor side panel, directly BELOW the always-visible
+# "Cursor Info" card (HoveredInk) and ABOVE the scrollable card list whose first entry is the "Inks"
+# zone — i.e. between Cursor Info and Inks. Same approach the multiplayer "Players" roster uses
+# (mp_draw_sync.gd::_maybe_build_players_panel): find HoveredInk, add to its parent VBox, position
+# it. Throttled to ~once a second; re-resolved if the panel vanishes.
+func _maybe_build_panel(delta: float) -> void:
+	if _panel != null and is_instance_valid(_panel):
+		return
+	_panel = null
+	_panel_accum += delta
+	if _panel_accum < 1.0:
+		return
+	_panel_accum = 0.0
+	var hovered := get_tree().root.find_node("HoveredInk", true, false)
+	if hovered == null:
+		return
+	var vbox := hovered.get_parent()
+	if vbox == null:
+		return
+	var existing = vbox.get_node_or_null("BoardSizePanel")
+	if existing != null:
+		_panel = existing
+		return
+	if not ResourceLoader.exists(PANEL_SCRIPT):
+		return
+	var scr = load(PANEL_SCRIPT)
+	if scr == null:
+		return
+	var panel = scr.new()
+	if panel == null:
+		return
+	panel.name = "BoardSizePanel"
+	vbox.add_child(panel)
+	vbox.move_child(panel, hovered.get_index() + 1)  # sit right below "Cursor Info", above "Inks"
+	_panel = panel
 
 
 func get_current_side() -> int:
@@ -85,10 +140,10 @@ func is_editor_mode() -> bool:
 
 
 func clamp_side(side: int) -> int:
+	# Floor only: the board is at least the vanilla default. There is deliberately NO upper cap —
+	# a bigger board just needs a more powerful PC (the UI recommends staying at/under 8192).
 	if side < MIN_SIDE:
 		side = MIN_SIDE
-	if side > MAX_SIDE:
-		side = MAX_SIDE
 	return side
 
 
@@ -399,8 +454,12 @@ remote func _rpc_set_pending_size(text) -> void:
 		win.set_pending_text(str(text))
 
 
+# The injected "Board" side-panel category (see _maybe_build_panel), which exposes reflect_side /
+# set_pending_text so the multiplayer RPCs above can drive it — the same interface the old popup had.
 func _window() -> Node:
+	if _panel != null and is_instance_valid(_panel):
+		return _panel
 	var main := get_tree().root.get_node_or_null("Main")
 	if main == null:
 		return null
-	return main.find_node("BoardSizeWindow", true, false)
+	return main.find_node("BoardSizePanel", true, false)

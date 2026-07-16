@@ -5,12 +5,12 @@ A runtime [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) m
 lets you **grow the board past the default 2048×2048**, live, from inside the game — no save/load
 round-trip needed.
 
-It adds a **"Board"** button to the toolbar that opens a small window with a single **Board
-size** field and an **Apply** button. Existing board content is preserved. It's
-**compatible with the [VCB Multiplayer](https://github.com/n-popescu/vcb-multiplayer) mod**: when
-a multiplayer session is live, the size field is **mirrored to the other player as you type**
-(before you even press Apply, so the two players can't end up on different numbers), and Apply
-resizes both boards.
+It adds a **"Board"** category to the circuit-editor **side panel** (docked between the **Cursor
+Info** card and the **Inks** zone) with a small **Board size** field and an **Apply** button.
+Existing board content is preserved. It's **compatible with the
+[VCB Multiplayer](https://github.com/n-popescu/vcb-multiplayer) mod**: when a multiplayer session
+is live, the size field is **mirrored to the other player as you type** (before you even press
+Apply, so the two players can't end up on different numbers), and Apply resizes both boards.
 
 Like the multiplayer mod, this is **pure GDScript** and loads at runtime — it **never replaces
 `vcb.pck`** and adds its own nodes at runtime, so it coexists with other Mod Loader mods.
@@ -25,9 +25,11 @@ same code uses that single `side` for **both** axes (its pixel scan loops `x, y`
 so the board must be **square**. A non-square image would silently truncate (if taller) or read
 out of bounds (if wider).
 
-So this mod always produces a **square `side × side` board**. The window has a single **Board
-size** field (2048 minimum by design; 8192 is a soft cap — larger boards use a lot of memory,
-see *Limitations*).
+So this mod always produces a **square `side × side` board**. The side-panel card has a single
+**Board size** field — **2048 minimum** by design, with **no hard upper limit** (the size is
+effectively *unbounded*). Bigger boards just need a more powerful PC, so the field only
+**recommends** staying at or under **8192**; go higher at your own (memory/GPU) risk — see
+*Limitations*.
 
 ## Install & run
 
@@ -37,7 +39,8 @@ see *Limitations*).
    [latest release](https://github.com/n-popescu/vcb-board-size-modifier/releases/latest), or
    build it yourself: `./build.sh`.
 3. Drop that zip into the game's `mods/` folder (**📁 Mods folder** in the launcher).
-4. Press **▶ Launch game**, click **Board** in the toolbar, enter a size, and press **Apply**.
+4. Press **▶ Launch game**, find the **Board** card in the circuit-editor side panel (between
+   **Cursor Info** and **Inks**), enter a size, and press **Apply**.
 
 ## How it works
 
@@ -76,9 +79,11 @@ in only past 2048; a default board is unchanged.
 
 - **Square only** — an engine constraint, not a UI shortcut (see above).
 - **Big boards are heavy.** An `N×N` board is four `N×N` RGBA images plus an `N×N` render target;
-  at 8192 that's on the order of a gigabyte of image memory. Start modest (e.g. 4096). Starting a
-  stroke still re-uploads the layer once (to re-sync), so the very first click of a stroke on a
-  huge board can hitch briefly; the drawing itself stays smooth.
+  memory and per-frame render cost grow with `N²`, so at 8192 that's already on the order of a
+  gigabyte of image memory — and since there's **no cap**, anything beyond the recommended 8192
+  climbs fast and needs a genuinely powerful PC. Start modest (e.g. 4096). Starting a stroke still
+  re-uploads the layer once (to re-sync), so the very first click of a stroke on a huge board can
+  hitch briefly; the drawing itself stays smooth.
 - **Entity-highlight hover** (during simulation) reads a `const` rect that can't be changed at
   runtime, so hovering to highlight an entity only works within the original 2048×2048 region.
 - **Loading a project** re-creates the layers at the *saved* size, which can disagree with the

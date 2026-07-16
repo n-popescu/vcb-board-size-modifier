@@ -25,8 +25,11 @@ axes (`scan_pixels` loops `x, y` in `[0, side)`; see
 dimensions"). So:
 
 > **Only ever produce a square `side × side` board.** A non-square image truncates (taller than
-> wide) or reads out of bounds (wider than tall). The UI is a single **Board size** field
-> clamped to `[MIN_SIDE, MAX_SIDE]` = `[2048, 8192]`.
+> wide) or reads out of bounds (wider than tall). The UI is a single **Board size** field with a
+> **floor of `MIN_SIDE` = 2048** and **no hard upper cap** — the size is effectively unbounded
+> ("infinite"); larger boards just need a more powerful PC, so the field only *recommends* staying
+> at/under **8192** (advisory text, not a clamp). The field lives in the side-panel **Board**
+> category (see §5), not a popup.
 
 ## 2. How the resize works (what state must move together)
 
@@ -168,6 +171,41 @@ A **non-empty** `"modded"` marks a file as "made with mods"; an empty/absent one
   layer's own width (robust for older files / autosaves). In a live MP session the load-resize
   broadcasts, so opening a sized project on the host also resizes the peer.
 
+## 3b. If you add a `Popup` dialog UI — avoid the "empty space beneath everything" bug
+
+Any mod window built as a `Popup` whose content is a container (VBox/PanelContainer, as ours and
+the multiplayer window are) must **re-fit on the next idle frame**, or it opens with a tall,
+invisible dead zone hanging below the visible content (it looks like "a zone beneath everything
+that extends", and it still swallows clicks). Why: `set_as_minsize()` runs *synchronously*, but a
+container only recomputes its `rect_min_size` on the **next idle frame** — so calling
+`set_as_minsize()` right after `popup_centered()` sizes the popup to the *stale, pre-layout*
+minimum (usually too tall). The one-liner fix, applied on every open (and again whenever the set of
+visible child sections changes):
+
+```gdscript
+popup_centered()
+set_as_minsize()
+_refit()               # yield(get_tree(), "idle_frame"); set_as_minsize(); re-center
+
+func _refit() -> void:
+	yield(get_tree(), "idle_frame")
+	if not visible:
+		return
+	set_as_minsize()
+	_center()          # re-center against U.get_global_viewport_size_scaled() to match flux
+```
+
+> **The canonical popup skeleton is the multiplayer window** —
+> `vcb-multiplayer/.../scripts/gui/mp_window.gd` (`open_window` / `_refit` / `_center`). Copy that
+> shape for any new popup: a `PanelContainer` + `MarginContainer` + `VBoxContainer` styled with the
+> dark `StyleBoxFlat`, presented via `res://src/gui/flux/flux_mod_popup.tscn` for the shared dimmed
+> backdrop + scale/fade entrance, and re-fit as above.
+
+Note: **this mod no longer ships a popup** — its Board size field moved into the side-panel
+**Board** category (§5), so there's no dead zone to hit here anymore. The guidance above is kept
+for the next mod that *does* add a popup. (The old `board_size_window.gd` carried the same fix; see
+its git history if you need the concrete before/after.)
+
 ## 4. Engine / GDScript constraints
 
 - **Godot 3.5.1**, GDScript 3.5 semantics — **not** Godot 4. No Godot-4 syntax.
@@ -186,12 +224,16 @@ A **non-empty** `"modded"` marks a file as "made with mods"; an empty/absent one
 build.sh                      → npopescu-VCBBoardSizeModifier.zip
 mods-unpacked/npopescu-VCBBoardSizeModifier/
 ├── manifest.json             Mod Loader manifest (id = npopescu-VCBBoardSizeModifier)
-├── mod_main.gd               installs the script extensions, then waits for Main and builds
-│                             the /root/BoardSizeSync node + window + toolbar button
+├── mod_main.gd               installs the script extensions, then waits for Main and builds the
+│                             /root/BoardSizeSync node (no popup/toolbar — the UI is a side-panel card)
 ├── scripts/
 │   ├── board_resizer.gd      the resize routine (incl. board-texture shader rebuild), the
-│   │                         /root/BoardSizeSync MP RPC node + late-join size sync
-│   └── gui/board_size_window.gd   the WindowDialog: a single Board size field + Apply
+│   │                         /root/BoardSizeSync MP RPC node + late-join size sync, AND the lazy
+│   │                         injection of the side-panel "Board" category (_maybe_build_panel)
+│   └── gui/board_panel.gd    the side-panel "Board" category: a narrow size field + Apply, docked
+│                             between the "Cursor Info" card and the "Inks" zone (models the MP
+│                             "Players" panel, mp_players_panel.gd). Exposes reflect_side /
+│                             set_pending_text so the resizer's MP RPCs drive it
 └── extensions/               script extensions (installed in mod_main _init)
     ├── circuit_renderer.gd        caches layer textures + partial-uploads the changed rect,
     │                              and renders the prepass on-demand in edit mode (perf)
@@ -214,9 +256,10 @@ landing on `main` auto-cuts a Release.
   fails with HTTP 403. Example: `claude/<topic>-<sessionid>`.
 - Commits are auto-signed (ssh). Don't disable signing/hooks.
 - Open PRs against `main`; squash-merge. Note that changes are unverified in-engine and give a
-  test recipe (open **Board**, set e.g. 4096, Apply; draw/simulate in the new area; with the
-  multiplayer mod, type in the field on one peer and confirm the other's field updates live, then
-  Apply and confirm both boards resize). For v1.4.0 also check: panning/zooming a large board is
+  test recipe (find the **Board** card in the circuit-editor side panel — between "Cursor Info" and
+  "Inks" — set e.g. 4096, Apply; draw/simulate in the new area; with the multiplayer mod, type in
+  the field on one peer and confirm the other's field updates live, then Apply and confirm both
+  boards resize). For v1.4.0 also check: panning/zooming a large board is
   smooth (no per-frame prepass); a fast stroke on a large board still costs per-frame render
   (expected — see §2a); **save** a 4096 board and reopen it → it reopens at 4096 (and the file's
   JSON has a `"modded"` block); save a 2048 board → no `"modded"` block; **late-join** MP after the
