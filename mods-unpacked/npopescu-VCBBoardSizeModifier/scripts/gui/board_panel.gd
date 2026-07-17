@@ -23,6 +23,9 @@ const RECOMMENDED_SIDE := 8192   # advisory only — there is deliberately NO ha
 var _size_edit: LineEdit = null
 var _status: Label = null
 var _suppress_broadcast := false
+# Focus tracking for the size field, mirroring the game's own text inputs (see _build_ui).
+var _is_hovered := false
+var _is_typing := false
 
 
 func _ready() -> void:
@@ -31,6 +34,10 @@ func _ready() -> void:
 	_adopt_panel_style()
 	_build_ui()
 	reflect_side(_current_side())
+	# Clear hover defensively when the app window loses focus (the OS may not deliver mouse_exited),
+	# exactly like the game's search_bar.gd / flux_spinbox.gd text fields.
+	E.follow_events(self, [E.mn_unfocus])
+	set_process_input(false)
 
 
 # Match the neighbouring "Cursor Info" card's panel look by reusing its panel stylebox.
@@ -79,6 +86,17 @@ func _build_ui() -> void:
 	_size_edit.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_size_edit.connect("text_changed", self, "_on_text_changed")
 	_size_edit.connect("text_entered", self, "_on_text_entered")
+	# The game's own LineEdits (search_bar.gd, flux_spinbox.gd, blueprint text_edit.gd) release focus
+	# when you click off them, so a click on the board hands keyboard focus back to the editor and a
+	# shortcut like "S" fires instead of being typed into the field. A LineEdit built in code does NOT
+	# do this by itself, so reproduce the game's own pattern here: track hover + "typing" and, on a
+	# mouse click that lands outside the field (or Escape), release focus. Global input is only
+	# processed while the field is focused (armed in _on_edit_focus_entered, disarmed on exit).
+	_size_edit.connect("focus_entered", self, "_on_edit_focus_entered")
+	_size_edit.connect("focus_exited", self, "_on_edit_focus_exited")
+	_size_edit.connect("mouse_entered", self, "_on_edit_mouse_entered")
+	_size_edit.connect("mouse_exited", self, "_on_edit_mouse_exited")
+	_size_edit.connect("gui_input", self, "_on_edit_gui_input")
 	row.add_child(_size_edit)
 	var apply_btn = Button.new()
 	apply_btn.text = "Apply"
@@ -139,6 +157,53 @@ func _on_text_changed(new_text: String) -> void:
 
 func _on_text_entered(_text: String) -> void:
 	_on_apply()
+
+
+# --- size-field focus management (mirror the game's own unfocus-on-outside-click behaviour) -------
+
+func _on_edit_mouse_entered() -> void:
+	_is_hovered = true
+
+
+func _on_edit_mouse_exited() -> void:
+	_is_hovered = false
+
+
+func _on_edit_focus_entered() -> void:
+	# Keep focus only if the pointer is actually over the field (matches vanilla); a stray focus grab
+	# with the mouse elsewhere is released at once. Arm global input so a click elsewhere can unfocus.
+	if _is_hovered:
+		set_process_input(true)
+	else:
+		_size_edit.release_focus()
+
+
+func _on_edit_focus_exited() -> void:
+	_size_edit.deselect()
+	_is_typing = false
+	set_process_input(false)
+
+
+func _on_edit_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		_is_typing = true
+	elif event is InputEventKey:
+		if event.scancode == KEY_ESCAPE:
+			_size_edit.release_focus()
+
+
+func _input(event: InputEvent) -> void:
+	# A click landing anywhere other than the field (the board, another panel) drops focus, so the
+	# next keypress is a shortcut again instead of text. Gated on _is_typing so it only acts after the
+	# user actually clicked into the field, and set_process_input keeps it inert while unfocused.
+	if event is InputEventMouseButton:
+		if _is_typing and not _is_hovered:
+			_size_edit.release_focus()
+			set_process_input(false)
+
+
+func _ev_mn_unfocus(_mode: int, _args: Dictionary) -> void:
+	_is_hovered = false
 
 
 func _on_apply() -> void:
